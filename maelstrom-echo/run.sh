@@ -10,10 +10,7 @@ go get github.com/jepsen-io/maelstrom/demo/go
 go install .
 
 $MAELSTROM_BIN test \
-	-w unique-ids \
-	--bin ~/go/bin/maelstrom-unique-ids \
-	--time-limit 30 \
-	--rate 1000 \
-	--node-count 3 \
-	--availability total \
-	--nemesis partition
+	-w echo \
+	--bin ~/go/bin/maelstrom-echo \
+	--node-count 1 \
+	--time-limit 10
