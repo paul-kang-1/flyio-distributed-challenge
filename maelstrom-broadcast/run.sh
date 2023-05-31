@@ -6,9 +6,6 @@ if [ ! -f $MAELSTROM_BIN ]; then
 	exit 1
 fi
 
-go get github.com/jepsen-io/maelstrom/demo/go
-go install .
-
 part_a() {
 	echo "💚 Running part a"
 	$MAELSTROM_BIN test \
@@ -29,16 +26,19 @@ part_b () {
 		--rate 10
 }
 
-if [[ $# -ge 2 ]]; then echo "usage: $0 [<part>]" >&2; exit 1; fi
+main() {
+	go get github.com/jepsen-io/maelstrom/demo/go
+	go install .
 
-if [[ $# -eq 0 ]]; then
-	part_a
-	part_b
-	exit 0
-fi
+	if [[ $# -ge 2 ]]; then echo "usage: $0 [<part>]" >&2; exit 1; fi
 
-case "$1" in
-	a) part_a ;;
-	b) part_b ;;
-	*) echo "💔 invalid part number" >&2; exit 1 ;;
-esac
+	if [[ $# -eq 0 ]]; then part_a; part_b; exit 0; fi
+
+	case "$1" in
+		a) part_a ;;
+		b) part_b ;;
+		*) echo "💔 invalid part number" >&2; exit 1 ;;
+	esac
+}
+
+main "$@"

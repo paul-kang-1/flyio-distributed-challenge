@@ -4,12 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-var db map[int]struct{}
-var topology map[string][]string
+var (
+	db map[int]struct{}
+	topology map[string][]string
+	mapMutex sync.RWMutex
+)
 
 func handle_broadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 	return func(msg maelstrom.Message) error {
@@ -18,8 +22,13 @@ func handle_broadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 			return err
 		}
 		message := int(body["message"].(float64))
-		if _, ok := db[message]; !ok {
+		mapMutex.RLock()
+		_, ok := db[message]
+		mapMutex.RUnlock()
+		if !ok {
+			mapMutex.Lock()
 			db[message] = struct{}{}
+			mapMutex.Unlock()
 			for _, neighbor := range topology[n.ID()] {
 			// NOTE: Use below to ignore provided topology, assuming full connection
 			// for _, neighbor := range n.NodeIDs() {
@@ -38,12 +47,14 @@ func handle_read(n *maelstrom.Node) maelstrom.HandlerFunc {
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
+		mapMutex.RLock()
 		res := make([]int, len(db))
 		i := 0
 		for k := range db {
 			res[i] = k
 			i++
 		}
+		mapMutex.RUnlock()
 		body["messages"] = res
 		body["type"] = "read_ok"
 		return n.Reply(msg, body)
@@ -89,6 +100,7 @@ func main() {
 	n := maelstrom.NewNode()
 	db = make(map[int]struct{})
 	topology = make(map[string][]string)
+	mapMutex = sync.RWMutex{}
 
 	// Register handlers
 	n.Handle("broadcast", handle_broadcast(n))
