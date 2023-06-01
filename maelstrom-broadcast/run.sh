@@ -26,6 +26,17 @@ part_b () {
 		--rate 10
 }
 
+part_d () {
+	echo "💚 Running part d"
+	$MAELSTROM_BIN test \
+		-w broadcast \
+		--bin ~/go/bin/maelstrom-broadcast \
+		--node-count 25 \
+		--time-limit 20 \
+		--rate 100 \
+		--latency 100
+}
+
 main() {
 	go get github.com/jepsen-io/maelstrom/demo/go
 	go install .
@@ -37,6 +48,7 @@ main() {
 	case "$1" in
 		a) part_a ;;
 		b) part_b ;;
+		d) part_d ;;
 		*) echo "💔 invalid part number" >&2; exit 1 ;;
 	esac
 }
