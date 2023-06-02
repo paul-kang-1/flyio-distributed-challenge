@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	db map[int]struct{}
+	db       map[int]struct{}
 	topology map[string][]string
 	mapMutex sync.RWMutex
 )
@@ -30,9 +30,11 @@ func handle_broadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 			db[message] = struct{}{}
 			mapMutex.Unlock()
 			for _, neighbor := range topology[n.ID()] {
-			// NOTE: Use below to ignore provided topology, assuming full connection
-			// for _, neighbor := range n.NodeIDs() {
-				n.Send(neighbor, body)
+				// NOTE: Use below to ignore provided topology, assuming full connection
+				// for _, neighbor := range n.NodeIDs() {
+				if neighbor != msg.Src {
+					n.Send(neighbor, body)
+				}
 			}
 		}
 		delete(body, "message")

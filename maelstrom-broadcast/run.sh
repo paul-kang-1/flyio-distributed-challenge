@@ -37,9 +37,14 @@ part_d () {
 		--latency 100
 }
 
-main() {
+build () {
+	echo "💚 Building..."
 	go get github.com/jepsen-io/maelstrom/demo/go
 	go install .
+}
+
+main() {
+	build
 
 	if [[ $# -ge 2 ]]; then echo "usage: $0 [<part>]" >&2; exit 1; fi
 
