@@ -9,31 +9,48 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-type msgBody map[string]any
-
-var (
-	db         map[int]msgBody
-	neighbors  []string
-	retries    map[string][]map[string]any
-	dbMutex    sync.RWMutex
-	retryMutex sync.RWMutex
+type (
+	mapStruct[K comparable, V any] struct {
+		sync.RWMutex
+		m map[K]V
+	}
+	msgBody                        map[string]any
 )
 
-func read_db(key int) (map[string]any, bool) {
-	dbMutex.RLock()
-	val, ok := db[key]
-	dbMutex.RUnlock()
-	return val, ok
+var (
+	neighbors []string
+
+	db      mapStruct[int, msgBody]
+	retries mapStruct[string, []msgBody]
+)
+
+func (m *mapStruct[K, V]) Get(key K) (value V, ok bool) {
+	m.RLock()
+	defer m.RUnlock()
+	value, ok = m.m[key]
+	return
 }
 
-func write_db(key int, value *msgBody) {
-	dbMutex.Lock()
-	db[key] = *value
-	dbMutex.Unlock()
+func (m *mapStruct[K, V]) Put(key K, value V) {
+	m.Lock()
+	defer m.Unlock()
+	m.m[key] = value
+}
+
+func (m *mapStruct[K, V]) Keys() *[]K {
+	m.RLock()
+	defer m.RUnlock()
+	res := make([]K, len(m.m))
+	i := 0
+	for k := range m.m {
+		res[i] = k
+		i++
+	}
+	return &res
 }
 
 func retry(n *maelstrom.Node) {
-	for recipient, msgs := range retries {
+	for recipient, msgs := range retries.m {
 		for _, msg := range msgs {
 			n.Send(recipient, msg)
 		}
@@ -47,11 +64,9 @@ func handle_broadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 			return err
 		}
 		message := int(body["message"].(float64))
-		_, ok := read_db(message)
+		_, ok := db.Get(message)
 		if !ok {
-			dbMutex.Lock()
-			db[message] = nil
-			dbMutex.Unlock()
+			db.Put(message, nil)
 			for _, neighbor := range neighbors {
 				if neighbor != msg.Src {
 					n.Send(neighbor, body)
@@ -70,14 +85,7 @@ func handle_read(n *maelstrom.Node) maelstrom.HandlerFunc {
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
-		dbMutex.RLock()
-		res := make([]int, len(db))
-		i := 0
-		for k := range db {
-			res[i] = k
-			i++
-		}
-		dbMutex.RUnlock()
+		res := *db.Keys()
 		body["messages"] = res
 		body["type"] = "read_ok"
 		return n.Reply(msg, body)
@@ -121,9 +129,10 @@ func handle_topology(n *maelstrom.Node) maelstrom.HandlerFunc {
 
 func main() {
 	n := maelstrom.NewNode()
-	db = make(map[int]msgBody)
-	dbMutex = sync.RWMutex{}
-	retryMutex = sync.RWMutex{}
+	db.RWMutex = sync.RWMutex{}
+	db.m = make(map[int]msgBody)
+	retries.RWMutex = sync.RWMutex{}
+	retries.m = make(map[string][]msgBody)
 
 	// Register handlers
 	n.Handle("broadcast", handle_broadcast(n))
