@@ -9,29 +9,50 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
+type msgBody map[string]any
+
 var (
-	db       map[int]struct{}
-	topology map[string][]string
-	mapMutex sync.RWMutex
+	db         map[int]msgBody
+	neighbors  []string
+	retries    map[string][]map[string]any
+	dbMutex    sync.RWMutex
+	retryMutex sync.RWMutex
 )
+
+func read_db(key int) (map[string]any, bool) {
+	dbMutex.RLock()
+	val, ok := db[key]
+	dbMutex.RUnlock()
+	return val, ok
+}
+
+func write_db(key int, value *msgBody) {
+	dbMutex.Lock()
+	db[key] = *value
+	dbMutex.Unlock()
+}
+
+func retry(n *maelstrom.Node) {
+	for recipient, msgs := range retries {
+		for _, msg := range msgs {
+			n.Send(recipient, msg)
+		}
+	}
+}
 
 func handle_broadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 	return func(msg maelstrom.Message) error {
-		var body map[string]any
+		var body msgBody
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
 		message := int(body["message"].(float64))
-		mapMutex.RLock()
-		_, ok := db[message]
-		mapMutex.RUnlock()
+		_, ok := read_db(message)
 		if !ok {
-			mapMutex.Lock()
-			db[message] = struct{}{}
-			mapMutex.Unlock()
-			for _, neighbor := range topology[n.ID()] {
-				// NOTE: Use below to ignore provided topology, assuming full connection
-				// for _, neighbor := range n.NodeIDs() {
+			dbMutex.Lock()
+			db[message] = nil
+			dbMutex.Unlock()
+			for _, neighbor := range neighbors {
 				if neighbor != msg.Src {
 					n.Send(neighbor, body)
 				}
@@ -45,26 +66,26 @@ func handle_broadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 
 func handle_read(n *maelstrom.Node) maelstrom.HandlerFunc {
 	return func(msg maelstrom.Message) error {
-		var body map[string]any
+		var body msgBody
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
-		mapMutex.RLock()
+		dbMutex.RLock()
 		res := make([]int, len(db))
 		i := 0
 		for k := range db {
 			res[i] = k
 			i++
 		}
-		mapMutex.RUnlock()
+		dbMutex.RUnlock()
 		body["messages"] = res
 		body["type"] = "read_ok"
 		return n.Reply(msg, body)
 	}
 }
 
-func get_topology(body *map[string]any) (map[string][]string, error) {
-	field, ok := (*body)["topology"].(map[string]any)
+func get_topology(body *msgBody) (map[string][]string, error) {
+	field, ok := (*body)["topology"].(msgBody)
 	if !ok {
 		return nil, fmt.Errorf("Invalid JSON body format: 'topology'")
 	}
@@ -83,7 +104,7 @@ func get_topology(body *map[string]any) (map[string][]string, error) {
 
 func handle_topology(n *maelstrom.Node) maelstrom.HandlerFunc {
 	return func(msg maelstrom.Message) error {
-		var body map[string]any
+		var body msgBody
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
@@ -92,7 +113,7 @@ func handle_topology(n *maelstrom.Node) maelstrom.HandlerFunc {
 		if err != nil {
 			return err
 		}
-		topology = top
+		neighbors = top[n.ID()]
 		delete(body, "topology")
 		return n.Reply(msg, body)
 	}
@@ -100,9 +121,9 @@ func handle_topology(n *maelstrom.Node) maelstrom.HandlerFunc {
 
 func main() {
 	n := maelstrom.NewNode()
-	db = make(map[int]struct{})
-	topology = make(map[string][]string)
-	mapMutex = sync.RWMutex{}
+	db = make(map[int]msgBody)
+	dbMutex = sync.RWMutex{}
+	retryMutex = sync.RWMutex{}
 
 	// Register handlers
 	n.Handle("broadcast", handle_broadcast(n))
