@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -14,14 +15,13 @@ type (
 		sync.RWMutex
 		m map[K]V
 	}
-	msgBody                        map[string]any
+	msgBody map[string]any
 )
 
 var (
 	neighbors []string
 
-	db      mapStruct[int, msgBody]
-	retries mapStruct[string, []msgBody]
+	db mapStruct[int, msgBody]
 )
 
 func (m *mapStruct[K, V]) Get(key K) (value V, ok bool) {
@@ -49,33 +49,43 @@ func (m *mapStruct[K, V]) Keys() *[]K {
 	return &res
 }
 
-func retry(n *maelstrom.Node) {
-	for recipient, msgs := range retries.m {
-		for _, msg := range msgs {
-			n.Send(recipient, msg)
-		}
-	}
-}
-
 func handle_broadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 	return func(msg maelstrom.Message) error {
 		var body msgBody
+		var ackBody msgBody
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
-		message := int(body["message"].(float64))
+		if err := json.Unmarshal(msg.Body, &ackBody); err != nil {
+			return err
+		}
+		message := int(ackBody["message"].(float64))
+		delete(ackBody, "message")
+		ackBody["type"] = "broadcast_ok"
+		if err := n.Reply(msg, ackBody); err != nil {
+			return err
+		}
 		_, ok := db.Get(message)
 		if !ok {
 			db.Put(message, nil)
+			waiting := make(map[string]any, 0)
 			for _, neighbor := range neighbors {
-				if neighbor != msg.Src {
-					n.Send(neighbor, body)
+				if neighbor == msg.Src {
+					continue
 				}
+				waiting[neighbor] = nil
+			}
+			for len(waiting) > 0 {
+				for neighbor := range waiting {
+					n.RPC(neighbor, body, func(msg maelstrom.Message) error {
+						delete(waiting, neighbor)
+						return nil;
+					})
+				}
+				time.Sleep(time.Millisecond * 500)
 			}
 		}
-		delete(body, "message")
-		body["type"] = "broadcast_ok"
-		return n.Reply(msg, body)
+		return nil
 	}
 }
 
@@ -93,7 +103,7 @@ func handle_read(n *maelstrom.Node) maelstrom.HandlerFunc {
 }
 
 func get_topology(body *msgBody) (map[string][]string, error) {
-	field, ok := (*body)["topology"].(msgBody)
+	field, ok := (*body)["topology"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("Invalid JSON body format: 'topology'")
 	}
@@ -131,8 +141,6 @@ func main() {
 	n := maelstrom.NewNode()
 	db.RWMutex = sync.RWMutex{}
 	db.m = make(map[int]msgBody)
-	retries.RWMutex = sync.RWMutex{}
-	retries.m = make(map[string][]msgBody)
 
 	// Register handlers
 	n.Handle("broadcast", handle_broadcast(n))
