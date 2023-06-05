@@ -97,15 +97,6 @@ func handle_broadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 				})
 				time.Sleep(time.Millisecond * 500)
 			}
-			// for len(waiting) > 0 {
-			// 	for neighbor := range waiting {
-			// 		n.RPC(neighbor, body, func(msg maelstrom.Message) error {
-			// 			delete(waiting, neighbor)
-			// 			return nil
-			// 		})
-			// 	}
-			// 	time.Sleep(time.Millisecond * 500)
-			// }
 		}
 		return nil
 	}
