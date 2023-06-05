@@ -49,6 +49,12 @@ func (m *mapStruct[K, V]) Keys() *[]K {
 	return &res
 }
 
+func (m *mapStruct[K, V]) Length() int {
+	m.RLock()
+	defer m.RUnlock()
+	return len(m.m)
+}
+
 func handle_broadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 	return func(msg maelstrom.Message) error {
 		var body msgBody
@@ -68,22 +74,38 @@ func handle_broadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 		_, ok := db.Get(message)
 		if !ok {
 			db.Put(message, nil)
-			waiting := make(map[string]any, 0)
+			waiting := sync.Map{}
 			for _, neighbor := range neighbors {
 				if neighbor == msg.Src {
 					continue
 				}
-				waiting[neighbor] = nil
+				waiting.Store(neighbor, false)
 			}
-			for len(waiting) > 0 {
-				for neighbor := range waiting {
-					n.RPC(neighbor, body, func(msg maelstrom.Message) error {
-						delete(waiting, neighbor)
-						return nil;
+			pending := true
+			for pending {
+				pending = false
+				waiting.Range(func(neighbor, value any) bool {
+					if v, _ := waiting.Load(neighbor); v.(bool) {
+						return true
+					}
+					pending = true
+					n.RPC(neighbor.(string), body, func(msg maelstrom.Message) error {
+						waiting.Store(neighbor, true)
+						return nil
 					})
-				}
+					return true
+				})
 				time.Sleep(time.Millisecond * 500)
 			}
+			// for len(waiting) > 0 {
+			// 	for neighbor := range waiting {
+			// 		n.RPC(neighbor, body, func(msg maelstrom.Message) error {
+			// 			delete(waiting, neighbor)
+			// 			return nil
+			// 		})
+			// 	}
+			// 	time.Sleep(time.Millisecond * 500)
+			// }
 		}
 		return nil
 	}
