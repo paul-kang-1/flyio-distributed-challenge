@@ -26,6 +26,18 @@ part_b () {
 		--rate 10
 }
 
+part_c () {
+	echo "💚 Running part c"
+	$MAELSTROM_BIN test \
+		-w broadcast \
+		--bin ~/go/bin/maelstrom-broadcast \
+		--node-count 5 \
+		--time-limit 20 \
+		--rate 10 \
+		--nemesis partition
+}
+
+
 part_d () {
 	echo "💚 Running part d"
 	$MAELSTROM_BIN test \
@@ -53,6 +65,7 @@ main() {
 	case "$1" in
 		a) part_a ;;
 		b) part_b ;;
+		c) part_c ;;
 		d) part_d ;;
 		*) echo "💔 invalid part number" >&2; exit 1 ;;
 	esac
