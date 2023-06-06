@@ -10,6 +10,9 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
+const USE_TOPOLOGY_MSG = false
+const NUM_CHILD = 5
+
 type (
 	mapStruct[K comparable, V any] struct {
 		sync.RWMutex
@@ -20,8 +23,7 @@ type (
 
 var (
 	neighbors []string
-
-	db mapStruct[int, msgBody]
+	db        mapStruct[int, msgBody]
 )
 
 func (m *mapStruct[K, V]) Get(key K) (value V, ok bool) {
@@ -72,29 +74,32 @@ func handle_broadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 			return err
 		}
 		_, ok := db.Get(message)
-		if !ok {
-			db.Put(message, nil)
-			waiting := sync.Map{}
-			for _, neighbor := range neighbors {
-				if neighbor == msg.Src {
-					continue
-				}
-				waiting.Store(neighbor, false)
+		if ok {
+			return nil // return if message is already handled
+		}
+		db.Put(message, nil)
+		waiting := sync.Map{}
+		for _, neighbor := range neighbors {
+			if neighbor == msg.Src {
+				continue
 			}
-			pending := true
-			for pending {
-				pending = false
-				waiting.Range(func(neighbor, value any) bool {
-					if v, _ := waiting.Load(neighbor); v.(bool) {
-						return true
-					}
-					pending = true
-					n.RPC(neighbor.(string), body, func(msg maelstrom.Message) error {
-						waiting.Store(neighbor, true)
-						return nil
-					})
+			waiting.Store(neighbor, false)
+		}
+		pending := true
+		for pending {
+			pending = false
+			waiting.Range(func(neighbor, value any) bool {
+				if v, _ := waiting.Load(neighbor); v.(bool) {
 					return true
+				}
+				pending = true
+				n.RPC(neighbor.(string), body, func(msg maelstrom.Message) error {
+					waiting.Store(neighbor, true)
+					return nil
 				})
+				return true
+			})
+			if pending {
 				time.Sleep(time.Millisecond * 500)
 			}
 		}
@@ -140,14 +145,41 @@ func handle_topology(n *maelstrom.Node) maelstrom.HandlerFunc {
 			return err
 		}
 		body["type"] = "topology_ok"
-		top, err := get_topology(&body)
-		if err != nil {
-			return err
+		if USE_TOPOLOGY_MSG {
+			top, err := get_topology(&body)
+			if err != nil {
+				return err
+			}
+			neighbors = top[n.ID()]
+		} else {
+			spanning_tree_neighbor(n, NUM_CHILD)
 		}
-		neighbors = top[n.ID()]
 		delete(body, "topology")
 		return n.Reply(msg, body)
 	}
+}
+
+func spanning_tree_neighbor(n *maelstrom.Node, num_child int) {
+	topology := make(map[string][]string)
+	for _, node := range n.NodeIDs() {
+		topology[node] = make([]string, 0)
+	}
+	queue := []int{0}
+	idx := 1
+	currNodeIdx := 0
+	for len(queue) > 0 {
+		currNodeIdx = queue[0]
+		currNodeID := n.NodeIDs()[currNodeIdx]
+		queue = queue[1:]
+		for i := 0; i < num_child && idx < len(n.NodeIDs()); i++ {
+			queue = append(queue, idx)
+			neighborNodeID := n.NodeIDs()[idx]
+			topology[currNodeID] = append(topology[currNodeID], neighborNodeID)
+			topology[neighborNodeID] = append(topology[neighborNodeID], currNodeID)
+			idx++
+		}
+	}
+	neighbors = topology[n.ID()]
 }
 
 func main() {
