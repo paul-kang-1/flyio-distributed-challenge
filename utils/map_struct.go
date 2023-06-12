@@ -6,28 +6,28 @@ import (
 
 type MapStruct[K comparable, V any] struct {
 	sync.RWMutex
-	m map[K]V
+	M map[K]V
 }
 
 func (m *MapStruct[K, V]) Get(key K) (value V, ok bool) {
 	m.RLock()
 	defer m.RUnlock()
-	value, ok = m.m[key]
+	value, ok = m.M[key]
 	return
 }
 
 func (m *MapStruct[K, V]) Put(key K, value V) {
 	m.Lock()
 	defer m.Unlock()
-	m.m[key] = value
+	m.M[key] = value
 }
 
 func (m *MapStruct[K, V]) Keys() *[]K {
 	m.RLock()
 	defer m.RUnlock()
-	res := make([]K, len(m.m))
+	res := make([]K, len(m.M))
 	i := 0
-	for k := range m.m {
+	for k := range m.M {
 		res[i] = k
 		i++
 	}
@@ -37,5 +37,5 @@ func (m *MapStruct[K, V]) Keys() *[]K {
 func (m *MapStruct[K, V]) Length() int {
 	m.RLock()
 	defer m.RUnlock()
-	return len(m.m)
+	return len(m.M)
 }
