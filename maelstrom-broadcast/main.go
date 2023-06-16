@@ -13,6 +13,8 @@ import (
 
 const USE_TOPOLOGY_MSG = false
 const NUM_CHILD = 5
+const SYNC_MS = 500
+const RETRY_MS = 500
 
 type (
 	msgBody map[string]any
@@ -20,8 +22,16 @@ type (
 
 var (
 	neighbors []string
-	db        utils.MapStruct[int, msgBody]
+	// "set" of observed values by this node
+	db utils.MapStruct[int, any]
+	// map of [neighbor ID, set of values this node knows that the neighbor knows]
+	// used for periodic Sync operations
+	acked utils.MapStruct[string, map[int]any]
 )
+
+/*
+ *  Request Handlers
+ */
 
 func handleBroadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 	return func(msg maelstrom.Message) error {
@@ -44,7 +54,7 @@ func handleBroadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 			return nil // return if message is already handled
 		}
 		db.Put(message, nil)
-		waiting := sync.Map{}
+		waiting := sync.Map{} // use sync.Map for retried iterations
 		for _, neighbor := range neighbors {
 			if neighbor == msg.Src {
 				continue
@@ -59,14 +69,17 @@ func handleBroadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 					return true
 				}
 				pending = true
+				// RPCs are non-blocking, as opposed to SyncRPC
 				n.RPC(neighbor.(string), body, func(msg maelstrom.Message) error {
 					waiting.Store(neighbor, true)
+					waiting.LoadOrStore(neighbor, true)
 					return nil
 				})
 				return true
 			})
 			if pending {
-				time.Sleep(time.Millisecond * 500)
+				// Each handler functions are run in its own goroutine, OK to sleep
+				time.Sleep(time.Millisecond * RETRY_MS)
 			}
 		}
 		return nil
@@ -84,24 +97,6 @@ func handleRead(n *maelstrom.Node) maelstrom.HandlerFunc {
 		body["type"] = "read_ok"
 		return n.Reply(msg, body)
 	}
-}
-
-func getTopology(body *msgBody) (map[string][]string, error) {
-	field, ok := (*body)["topology"].(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("Invalid JSON body format: 'topology'")
-	}
-	topology := make(map[string][]string)
-	for node, neighbors := range field {
-		if neighborsJSON, ok := neighbors.([]any); ok {
-			for _, neighbor := range neighborsJSON {
-				if neighborStr, ok := neighbor.(string); ok {
-					topology[node] = append(topology[node], neighborStr)
-				}
-			}
-		}
-	}
-	return topology, nil
 }
 
 func handleTopology(n *maelstrom.Node) maelstrom.HandlerFunc {
@@ -123,6 +118,39 @@ func handleTopology(n *maelstrom.Node) maelstrom.HandlerFunc {
 		delete(body, "topology")
 		return n.Reply(msg, body)
 	}
+}
+
+func handleSync(n *maelstrom.Node) maelstrom.HandlerFunc {
+	return func(msg maelstrom.Message) error {
+		var body msgBody
+		if err := json.Unmarshal(msg.Body, &body); err != nil {
+			return err
+		}
+		body["type"] = "sync_ok"
+		return n.Reply(msg, body)
+	}
+}
+
+/*
+ *  Helpers
+ */
+
+func getTopology(body *msgBody) (map[string][]string, error) {
+	field, ok := (*body)["topology"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("Invalid JSON body format: 'topology'")
+	}
+	topology := make(map[string][]string)
+	for node, neighbors := range field {
+		if neighborsJSON, ok := neighbors.([]any); ok {
+			for _, neighbor := range neighborsJSON {
+				if neighborStr, ok := neighbor.(string); ok {
+					topology[node] = append(topology[node], neighborStr)
+				}
+			}
+		}
+	}
+	return topology, nil
 }
 
 func spanningTreeNeighbor(n *maelstrom.Node, num_child int) {
@@ -150,9 +178,13 @@ func spanningTreeNeighbor(n *maelstrom.Node, num_child int) {
 
 func main() {
 	n := maelstrom.NewNode()
-	db = utils.MapStruct[int, msgBody]{
+	db = utils.MapStruct[int, any]{
 		RWMutex: sync.RWMutex{},
-		M:       make(map[int]msgBody),
+		M:       make(map[int]any),
+	}
+	acked = utils.MapStruct[string, map[int]any]{
+		RWMutex: sync.RWMutex{},
+		M:       make(map[string]map[int]any),
 	}
 
 	// Register handlers
