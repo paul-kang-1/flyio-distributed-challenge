@@ -11,11 +11,11 @@ import (
 	"github.com/paul-kang-1/flyio-distributed-challenge/utils"
 )
 
-const USE_TOPOLOGY_MSG = false
-const USE_SYNC = true
-const NUM_CHILD = 5
-const SYNC_MS = 250
-const RETRY_MS = 500
+const UseTopologyMsg = false
+const UseSync = true
+const NumChild = 5
+const SyncMs = 250
+const RetryMs = 500
 
 type (
 	msgBody map[string]any
@@ -83,7 +83,7 @@ func handleBroadcast(n *maelstrom.Node, isSync bool) maelstrom.HandlerFunc {
 			})
 			if pending {
 				// Each handler functions are run in its own goroutine, OK to sleep
-				time.Sleep(time.Millisecond * RETRY_MS)
+				time.Sleep(time.Millisecond * RetryMs)
 			}
 		}
 		return nil
@@ -110,14 +110,14 @@ func handleTopology(n *maelstrom.Node) maelstrom.HandlerFunc {
 			return err
 		}
 		body["type"] = "topology_ok"
-		if USE_TOPOLOGY_MSG {
+		if UseTopologyMsg {
 			if err := setNeighborFromMsg(n, &body); err != nil {
 				return err
 			}
 		} else {
-			setSpanningTreeNeighbor(n, NUM_CHILD)
+			setSpanningTreeNeighbor(n, NumChild)
 		}
-		// Setup the acked DS
+		// Set up the acked DS
 		for _, id := range neighbors {
 			acked.M[id] = make(map[int]any)
 		}
@@ -126,13 +126,12 @@ func handleTopology(n *maelstrom.Node) maelstrom.HandlerFunc {
 	}
 }
 
-func handleSync(n *maelstrom.Node) maelstrom.HandlerFunc {
+func handleSync() maelstrom.HandlerFunc {
 	return func(msg maelstrom.Message) error {
 		var body msgBody
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
-		body["type"] = "sync_ok"
 		// 1. Add newly seen messages to DB (& acked)
 		received := body["message"].([]any)
 		for _, v := range received {
@@ -144,21 +143,20 @@ func handleSync(n *maelstrom.Node) maelstrom.HandlerFunc {
 			acked.Unlock()
 		}
 		// 2. Send back entire DB - (acked by sender)
-		res := []int{}
-		// NOTE: Cannot use mapStruct.Get()
-		ackedVals := make(map[int]any)
+		var res []int
+		// NOTE: Cannot use mapStruct.Get() here, since the values of the map
+		// is returned as a reference, leading to concurrent map reads.
+		ackedValues := make(map[int]any)
 		acked.RLock()
 		for val := range acked.M[msg.Src] {
-			ackedVals[val] = nil
+			ackedValues[val] = nil
 		}
 		acked.RUnlock()
 		for _, v := range *db.Keys() {
-			if _, ok := ackedVals[v]; !ok {
+			if _, ok := ackedValues[v]; !ok {
 				res = append(res, v)
 			}
 		}
-		body["message"] = res
-		// return n.Reply(msg, body)
 		return nil
 	}
 }
@@ -190,7 +188,9 @@ func syncDB(n *maelstrom.Node) error {
 		}
 		body["type"] = "sync"
 		body["message"] = message
-		n.Send(neighbor, &body)
+		if err := n.Send(neighbor, &body); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -198,7 +198,7 @@ func syncDB(n *maelstrom.Node) error {
 func setNeighborFromMsg(n *maelstrom.Node, body *msgBody) error {
 	field, ok := (*body)["topology"].(map[string]any)
 	if !ok {
-		return fmt.Errorf("Invalid JSON body format: 'topology'")
+		return fmt.Errorf("invalid JSON body format: 'topology'")
 	}
 	topology := make(map[string][]string)
 	for node, neighbors := range field {
@@ -214,7 +214,7 @@ func setNeighborFromMsg(n *maelstrom.Node, body *msgBody) error {
 	return nil
 }
 
-func setSpanningTreeNeighbor(n *maelstrom.Node, num_child int) {
+func setSpanningTreeNeighbor(n *maelstrom.Node, numChild int) {
 	topology := make(map[string][]string)
 	for _, node := range n.NodeIDs() {
 		topology[node] = make([]string, 0)
@@ -226,7 +226,7 @@ func setSpanningTreeNeighbor(n *maelstrom.Node, num_child int) {
 		currNodeIdx = queue[0]
 		currNodeID := n.NodeIDs()[currNodeIdx]
 		queue = queue[1:]
-		for i := 0; i < num_child && idx < len(n.NodeIDs()); i++ {
+		for i := 0; i < numChild && idx < len(n.NodeIDs()); i++ {
 			queue = append(queue, idx)
 			neighborNodeID := n.NodeIDs()[idx]
 			topology[currNodeID] = append(topology[currNodeID], neighborNodeID)
@@ -249,16 +249,18 @@ func main() {
 	}
 
 	// Register handlers
-	n.Handle("broadcast", handleBroadcast(n, USE_SYNC))
+	n.Handle("broadcast", handleBroadcast(n, UseSync))
 	n.Handle("read", handleRead(n))
 	n.Handle("topology", handleTopology(n))
-	n.Handle("sync", handleSync(n))
+	n.Handle("sync", handleSync())
 
-	if USE_SYNC {
+	if UseSync {
 		go func() {
 			for {
-				syncDB(n)
-				time.Sleep(SYNC_MS * time.Millisecond)
+				if err := syncDB(n); err != nil {
+					log.Fatal(err)
+				}
+				time.Sleep(SyncMs * time.Millisecond)
 			}
 		}()
 	}
