@@ -12,8 +12,9 @@ import (
 )
 
 const USE_TOPOLOGY_MSG = false
+const USE_SYNC = true
 const NUM_CHILD = 5
-const SYNC_MS = 500
+const SYNC_MS = 250
 const RETRY_MS = 500
 
 type (
@@ -33,7 +34,7 @@ var (
  *  Request Handlers
  */
 
-func handleBroadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
+func handleBroadcast(n *maelstrom.Node, isSync bool) maelstrom.HandlerFunc {
 	return func(msg maelstrom.Message) error {
 		var body msgBody
 		var ackBody msgBody
@@ -54,6 +55,9 @@ func handleBroadcast(n *maelstrom.Node) maelstrom.HandlerFunc {
 			return nil // return if message is already handled
 		}
 		db.Put(message, nil)
+		if isSync {
+			return nil // return without propagation to neighbors if sync is used
+		}
 		waiting := sync.Map{} // use sync.Map for retried iterations
 		for _, neighbor := range neighbors {
 			if neighbor == msg.Src {
@@ -107,13 +111,15 @@ func handleTopology(n *maelstrom.Node) maelstrom.HandlerFunc {
 		}
 		body["type"] = "topology_ok"
 		if USE_TOPOLOGY_MSG {
-			top, err := getTopology(&body)
-			if err != nil {
+			if err := setNeighborFromMsg(n, &body); err != nil {
 				return err
 			}
-			neighbors = top[n.ID()]
 		} else {
-			spanningTreeNeighbor(n, NUM_CHILD)
+			setSpanningTreeNeighbor(n, NUM_CHILD)
+		}
+		// Setup the acked DS
+		for _, id := range neighbors {
+			acked.M[id] = make(map[int]any)
 		}
 		delete(body, "topology")
 		return n.Reply(msg, body)
@@ -127,7 +133,33 @@ func handleSync(n *maelstrom.Node) maelstrom.HandlerFunc {
 			return err
 		}
 		body["type"] = "sync_ok"
-		return n.Reply(msg, body)
+		// 1. Add newly seen messages to DB (& acked)
+		received := body["message"].([]any)
+		for _, v := range received {
+			val := int(v.(float64))
+			db.Put(val, nil)
+			acked.Lock()
+			curr, _ := acked.M[msg.Src]
+			curr[val] = nil
+			acked.Unlock()
+		}
+		// 2. Send back entire DB - (acked by sender)
+		res := []int{}
+		// NOTE: Cannot use mapStruct.Get()
+		ackedVals := make(map[int]any)
+		acked.RLock()
+		for val := range acked.M[msg.Src] {
+			ackedVals[val] = nil
+		}
+		acked.RUnlock()
+		for _, v := range *db.Keys() {
+			if _, ok := ackedVals[v]; !ok {
+				res = append(res, v)
+			}
+		}
+		body["message"] = res
+		// return n.Reply(msg, body)
+		return nil
 	}
 }
 
@@ -135,10 +167,38 @@ func handleSync(n *maelstrom.Node) maelstrom.HandlerFunc {
  *  Helpers
  */
 
-func getTopology(body *msgBody) (map[string][]string, error) {
+func syncDB(n *maelstrom.Node) error {
+	if n.ID() == "" {
+		return nil
+	}
+	values := *db.Keys()
+	body := make(msgBody)
+	var message []int
+	var currAcked map[int]any
+	for _, neighbor := range neighbors {
+		message = make([]int, 0)
+		currAcked = make(map[int]any)
+		acked.RLock()
+		for val := range acked.M[neighbor] {
+			currAcked[val] = nil
+		}
+		acked.RUnlock()
+		for _, v := range values {
+			if _, ok := currAcked[v]; !ok {
+				message = append(message, v)
+			}
+		}
+		body["type"] = "sync"
+		body["message"] = message
+		n.Send(neighbor, &body)
+	}
+	return nil
+}
+
+func setNeighborFromMsg(n *maelstrom.Node, body *msgBody) error {
 	field, ok := (*body)["topology"].(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("Invalid JSON body format: 'topology'")
+		return fmt.Errorf("Invalid JSON body format: 'topology'")
 	}
 	topology := make(map[string][]string)
 	for node, neighbors := range field {
@@ -150,10 +210,11 @@ func getTopology(body *msgBody) (map[string][]string, error) {
 			}
 		}
 	}
-	return topology, nil
+	neighbors = topology[n.ID()]
+	return nil
 }
 
-func spanningTreeNeighbor(n *maelstrom.Node, num_child int) {
+func setSpanningTreeNeighbor(n *maelstrom.Node, num_child int) {
 	topology := make(map[string][]string)
 	for _, node := range n.NodeIDs() {
 		topology[node] = make([]string, 0)
@@ -188,11 +249,23 @@ func main() {
 	}
 
 	// Register handlers
-	n.Handle("broadcast", handleBroadcast(n))
+	n.Handle("broadcast", handleBroadcast(n, USE_SYNC))
 	n.Handle("read", handleRead(n))
 	n.Handle("topology", handleTopology(n))
+	n.Handle("sync", handleSync(n))
+
+	if USE_SYNC {
+		go func() {
+			for {
+				syncDB(n)
+				time.Sleep(SYNC_MS * time.Millisecond)
+			}
+		}()
+	}
 
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
 	}
+
+	log.Println("Hi there!")
 }
