@@ -66,6 +66,7 @@ func handleBroadcast(n *maelstrom.Node, isSync bool) maelstrom.HandlerFunc {
 			waiting.Store(neighbor, false)
 		}
 		pending := true
+		var err error
 		for pending {
 			pending = false
 			waiting.Range(func(neighbor, value any) bool {
@@ -74,19 +75,19 @@ func handleBroadcast(n *maelstrom.Node, isSync bool) maelstrom.HandlerFunc {
 				}
 				pending = true
 				// RPCs are non-blocking, as opposed to SyncRPC
-				n.RPC(neighbor.(string), body, func(msg maelstrom.Message) error {
+				err = n.RPC(neighbor.(string), body, func(msg maelstrom.Message) error {
 					waiting.Store(neighbor, true)
 					waiting.LoadOrStore(neighbor, true)
 					return nil
 				})
-				return true
+				return err == nil
 			})
 			if pending {
 				// Each handler functions are run in its own goroutine, OK to sleep
 				time.Sleep(time.Millisecond * RetryMs)
 			}
 		}
-		return nil
+		return err
 	}
 }
 
@@ -138,7 +139,7 @@ func handleSync() maelstrom.HandlerFunc {
 			val := int(v.(float64))
 			db.Put(val, nil)
 			acked.Lock()
-			curr, _ := acked.M[msg.Src]
+			curr := acked.M[msg.Src]
 			curr[val] = nil
 			acked.Unlock()
 		}
