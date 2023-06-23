@@ -2,6 +2,8 @@
 
 Series of distributed system challenges, from unique ID generation to asynchronous consensus. Attempted in Go.
 
+Check out [my blog](https://woosang.io) for further reads on solving each of the challenges!
+
 ## Getting Started
 
 ### Running the Code
