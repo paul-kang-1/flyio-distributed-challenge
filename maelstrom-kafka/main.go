@@ -2,9 +2,24 @@ package main
 
 import (
 	"log"
+	"sync"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
+	"github.com/paul-kang-1/flyio-distributed-challenge/utils"
 )
+
+/*
+ *  Data Structures
+ */
+ type Entry struct {
+	offset int
+	message any
+ }
+
+ var (
+	 maxCommitted int
+	 db utils.MapStruct[string, Entry]
+ )
 
 /*
  *  Request Handlers
@@ -12,7 +27,11 @@ import (
 
  func handleSend(n *maelstrom.Node) maelstrom.HandlerFunc {
 	return func(msg maelstrom.Message) error {
-		return nil
+		var body map[string]any
+		key := body["key"].(string)
+		value := body["msg"]
+		var reply map[string]any
+		return n.Reply(msg, reply)
 	}
  }
 
@@ -36,7 +55,10 @@ import (
 
 func main() {
 	n := maelstrom.NewNode()
-
+	db = utils.MapStruct[string, Entry]{
+		RWMutex: sync.RWMutex{},
+		M: make(map[string]Entry),
+	}
 	// Register handlers
 	n.Handle("send", handleSend((n)))
 	n.Handle("poll", handlePoll((n)))
